@@ -204,6 +204,7 @@ class LoadDataset:
         
         print("Scaling our dataset...\n")
         
+        num = 0
         check = {col:False for col in self.train.x.columns}
         for i, (col, method) in enumerate(method_dict.items()):
             assert method in self.scaling_fc.keys(), f"Scaling method can only be used in one of the following methods: {self.scaling_fc.keys()}"
@@ -213,19 +214,22 @@ class LoadDataset:
                 for col_name in self.train.x.columns:
                     if col_name in self.train.get_num_cols():
                         self.scaling_fc[method](col_name)
+                        num += 1
                 break
             # 특정 Column을 제외한 나머지 모든 Column에 method 적용
             elif col == "OTHERS":
                 for col_name in self.train.x.columns:
                     if not check[col_name] and (col_name in self.train.get_num_cols()):
                         self.scaling_fc[method](col_name)
+                        num += 1
                 break
             # 특정 Column에 해당 method 적용
             else:
                 self.scaling_fc[method](col)
                 check[col] = True
+                num += 1
 
-        print("\nFinish!")
+        print(f"\nFinish! (the number of columns: {num})")
         self.stage4 = True
         print("\n====================")
 
@@ -245,6 +249,7 @@ class LoadDataset:
         
         print("Encoding our dataset...\n")
         
+        num = 0
         check = {col:False for col in self.train.x.columns}
         for i, (col, method) in enumerate(method_dict.items()):
             assert method in self.encoding_fc.keys(), f"Encoding method can only be used in one of the following methods: {self.encoding_fc.keys()}"
@@ -253,6 +258,7 @@ class LoadDataset:
             if col == "ALL":
                 for col_name in self.train.x.columns:
                     if col_name in self.train.get_cat_cols():
+                        num += 1
                         self.encoding_fc[method](col_name)
                 break
             # 특정 Column을 제외한 나머지 모든 Column에 method 적용
@@ -262,14 +268,16 @@ class LoadDataset:
                     if col_name not in check.keys():
                         continue
                     if not check[col_name] and (col_name in self.train.get_cat_cols()):
+                        num += 1
                         self.encoding_fc[method](col_name)
                 break
             # 특정 Column에 해당 method 적용
             else:
                 self.encoding_fc[method](col)
                 check[col] = True
+                num += 1
 
-        print("\nFinish!")
+        print(f"\nFinish! (the number of columns: {num})")
         self.stage4 = True
         print("\n====================")
 
@@ -461,4 +469,3 @@ class LoadDataset:
         
         if self.valid is not None:
             self.valid.x[[col_name]] = encoder.transform(self.valid.x[[col_name]])
-
