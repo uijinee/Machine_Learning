@@ -13,8 +13,9 @@ class Data:
     def __init__(self, features, labels):
         self.x = features
         self.y = labels
+        self.classes_ = {'AbNormal': 1, 'Normal': 0}
         if self.y is not None:
-            self.y = self.y.replace({'AbNormal': 1, 'Normal': 0})
+            self.y = self.y.replace(self.classes_)
 
     def get_num_cols(self):
         return self.x.select_dtypes(include=[np.number]).columns
@@ -25,6 +26,17 @@ class Data:
     def get_cat_idxs(self):
         return [i for i, col in enumerate(self.x.columns) if col in self.get_cat_cols()]
     
+    def get_cols(self, name):
+        if isinstance(name, str):
+            result = [col for col in self.x.columns if name in col]
+        elif isinstance(name, list):
+            result = [col for col in self.x.columns if all(item in col for item in name)]
+        assert len(result) > 0
+        return result
+    
+    def get(self, name):
+        return self.x[self.get_cols(name)]
+        
 class LoadDataset:
     def __init__(self, 
                  train_path,
@@ -34,10 +46,10 @@ class LoadDataset:
                  seed=42):
         self.seed=seed
 
-        self.train = Data(*self.load(train_path, drop_cols=drop_cols))
-        self.test = Data(*self.load(test_path, drop_cols=drop_cols, is_test=True))
+        self.train = Data(*self._load(train_path, drop_cols=drop_cols))
+        self.test = Data(*self._load(test_path, drop_cols=drop_cols, is_test=True))
         if valid_path is not None:
-            self.valid = Data(*self.load(valid_path, drop_cols=drop_cols))
+            self.valid = Data(*self._load(valid_path, drop_cols=drop_cols))
         else:
             self.valid = None
 
@@ -48,41 +60,42 @@ class LoadDataset:
         self.stage5 = False # (필수x) Encoding
 
         self.nan_processing_fc = {
-            "FILL MEDIAN FREQ": self.fill_with_median, 
-            "FILL MOST FREQ": self.fill_with_mfv,
-            "DROP COLUMN": self.drop_column,
-            "DROP ROW": self.drop_row
+            "FILL MEDIAN FREQ": self._fill_with_median, 
+            "FILL MOST FREQ": self._fill_with_mfv,
+            "DROP COLUMN": self._drop_column,
+            "DROP ROW": self._drop_row
         }
         
         self.feature_fc = {
-            "PCA": self.pca,
+            "PCA": self._pca,
+            "PCA PER PROCESS": self._pca_per_process,
         }
 
         self.sampling_fc = {
-            "OFF": self.sampling_with_off,
-            "SMOTE": self.sampling_with_smote, 
-            "UNDER": self.sampling_with_under
+            "OFF": self._sampling_with_off,
+            "SMOTE": self._sampling_with_smote, 
+            "UNDER": self._sampling_with_under
         }
 
         self.scaling_fc = {
-            "STANDARD": self.scaling_with_standard,
-            "MINMAX": self.scaling_with_minmax,
+            "STANDARD": self._scaling_with_standard,
+            "MINMAX": self._scaling_with_minmax,
         }
         
         self.encoding_fc = {
-            "ONEHOT": self.encoding_with_onehot,
-            "LABEL": self.encoding_with_label,
-            "TARGET": self.encoding_with_target
+            "ONEHOT": self._encoding_with_onehot,
+            "LABEL": self._encoding_with_label,
+            "TARGET": self._encoding_with_target
         }
         # 참조: https://contrib.scikit-learn.org/category_encoders/#
 
-    def load(self, path, drop_cols = None, is_test = False):
+    def _load(self, path, drop_cols = None, is_test = False):
         data = pd.read_csv(path)
         data = data.sort_index().reset_index(drop=True)
 
         labels = None
         if not is_test:
-            labels = data[["target"]]
+            labels = data["target"]
             data = data.drop("target", axis=1)
 
         features = data.copy()
@@ -91,7 +104,7 @@ class LoadDataset:
             features = features.drop(drop_cols, axis=1)
         return features, labels
     
-    def is_nan(self):
+    def _is_nan(self):
         if self.train.x.isnull().sum().sum() == 0:
             if (self.valid is not None) and (self.valid.x.isnull().sum().sum() == 0):
                 return False
@@ -140,7 +153,7 @@ class LoadDataset:
                 self.nan_processing_fc[method](col)
                 check[col] = True
 
-        self.stage1 = not self.is_nan()
+        self.stage1 = not self._is_nan()
         print("\nFinish!")
         print("(after processing)The number of nan")
         print(f"- train: {self.train.x.isna().sum().sum()}")
@@ -288,11 +301,11 @@ class LoadDataset:
     ##############################
     
     # PCA
-    def pca(self, n_components):
+    def _pca(self, n_components):
         print(f"  Execute PCA with {n_components} components...")
         if len(self.train.get_cat_cols()):
             print(f"  Warning: We only transform data with numeric value, now we have {len(self.train.get_cat_cols())} categorical column!")
-        pca = PCA(n_components=n_components)
+        pca = PCA(n_components=n_components, random_state=self.seed)
         target_columns = self.train.get_num_cols()
         pca_result = pca.fit_transform(self.train.x[target_columns])
         pca_result_test = pca.transform(self.test.x[target_columns])
@@ -305,7 +318,40 @@ class LoadDataset:
         if self.valid is not None:
             pca_result_valid = pca.transform(self.valid.x[target_columns])
             self.valid.x = pd.DataFrame(data=pca_result_valid, columns = [f"PC{i}" for i in range(1, n_components+1)])
-        
+    
+    def _pca_per_process(self, min_proba):
+        assert 0 <= min_proba < 1
+        print(f"  Execute PCA PER PROCESS with minimum probability {min_proba}")
+        new_train_x = pd.DataFrame()
+        new_test_x = pd.DataFrame()
+        new_valid_x = pd.DataFrame()
+        for name in ["Dam", "Fill1", "Fill2", "AutoClave"]:
+            cols = sorted(list(set(self.train.get_cols(name)) & set(self.train.get_num_cols())))
+            assert len(cols) > 0
+            print(f"\n  Stage '{name}': the number of target cols is '{len(cols)}'")
+            i = 1
+            while True:
+                pca = PCA(n_components=i, random_state=self.seed)
+                pca_result = pca.fit_transform(self.train.x[cols])
+                if sum(pca.explained_variance_ratio_) >= min_proba:
+                    break
+                i+=1
+            pca_result_test = pca.transform(self.test.x[cols])
+            print(f"  => {i}_components with Explained Variance Ratio '{sum(pca.explained_variance_ratio_)}'")
+            pca_result = pd.DataFrame(data=pca_result, columns = [f"PC{j}_{name}" for j in range(1, i+1)])
+            pca_result_test = pd.DataFrame(data=pca_result_test, columns = [f"PC{j}_{name}" for j in range(1, i+1)])
+
+            new_train_x = pd.concat([new_train_x, pca_result], axis=1)
+            new_test_x = pd.concat([new_test_x, pca_result_test], axis=1)
+            if self.valid is not None:
+                pca_result_valid = pca.transform(self.valid.x[cols])
+                pca_result_valid = pd.DataFrame(data=pca_result_valid, columns = [f"PC{j}_{name}" for j in range(1, i+1)])
+                new_valid_x = pd.concat([new_valid_x, pca_result_valid], axis=1)
+
+        self.train.x = new_train_x
+        self.test.x = new_test_x
+        if self.valid is not None:
+            self.valid.x = new_valid_x
 
     ####################
     #                  #
@@ -314,7 +360,7 @@ class LoadDataset:
     ####################
     
     # 결측치 중앙값(빈도수) 대체
-    def fill_with_median(self, col_name):
+    def _fill_with_median(self, col_name):
         # train과 valid에 모두 null이 없는 경우를 제외하면 모두 실행
         if not self.train.x[col_name].isnull().any():
             if (self.valid is not None) and (not self.valid.x[col_name].isnull().any()):
@@ -333,7 +379,7 @@ class LoadDataset:
             self.valid.x[col_name] = self.valid.x[col_name].fillna(median_value)
         
     # 결측치 최빈값 대체
-    def fill_with_mfv(self, col_name):
+    def _fill_with_mfv(self, col_name):
         # train과 valid에 모두 null이 없는 경우를 제외하면 모두 실행
         if not self.train.x[col_name].isnull().any():
             if (self.valid is not None) and (not self.valid.x[col_name].isnull().any()):
@@ -349,7 +395,7 @@ class LoadDataset:
             self.valid.x[col_name] = self.valid.x[col_name].fillna(most_frequent_value)
 
     # 결측치가 존재하는 Column제거
-    def drop_column(self, col_name):
+    def _drop_column(self, col_name):
         # train과 valid에 모두 null이 없는 경우를 제외하면 모두 실행
         if not self.train.x[col_name].isnull().any():
             if (self.valid is not None) and (not self.valid.x[col_name].isnull().any()):
@@ -364,13 +410,17 @@ class LoadDataset:
             self.valid.x = self.valid.x.drop(columns=[col_name])
     
     # 결측치가 존재하는 row제거
-    def drop_row(self, col_name):
+    def _drop_row(self, col_name):
         # test에는 해당 Column에 null이 존재하면 안됨 
         # assert not self.test.x[col_name].isnull().any() # !test data존재하면 주석 해제!
+        idxs = self.train.x[self.train.x[col_name].isnull()].index
+        self.train.x = self.train.x.drop(idxs)
+        self.train.y = self.train.y.drop(idxs)
 
-        self.train.x = self.train.x.dropna(subset=[col_name])
         if self.valid is not None:    
-           self.valid.x = self.valid.x.dropna(subset=[col_name])
+           idxs_ = self.valid.x[self.valid.x[col_name].isnull()].index
+           self.valid.x = self.valid.x.drop(idxs_)
+           self.valid.y = self.valid.y.drop(idxs_)
 
     ###################
     #                 #
@@ -379,17 +429,17 @@ class LoadDataset:
     ###################
 
     # Sampling 해제
-    def sampling_with_off(self, x, y):
+    def _sampling_with_off(self, x, y):
         return x, y
     
     # SMOTE Sampling
-    def sampling_with_smote(self, x, y):
+    def _sampling_with_smote(self, x, y):
         smote_nc = SMOTENC(categorical_features=self.train.get_cat_idxs(), random_state=self.seed)
         x, y = smote_nc.fit_resample(x, y)
         return x, y
     
     # Under Sampling
-    def sampling_with_under(self, x, y):
+    def _sampling_with_under(self, x, y):
         under_sampler = RandomUnderSampler(sampling_strategy='majority', random_state=self.seed)
         x, y = under_sampler.fit_resample(x, y)
         return x, y
@@ -401,7 +451,7 @@ class LoadDataset:
     ##################
 
     # Standard Scaler
-    def scaling_with_standard(self, col_name):
+    def _scaling_with_standard(self, col_name):
         assert col_name in self.train.get_num_cols(), f"Column {col_name} is not in the numeric columns"
         scaler = StandardScaler()
         self.train.x[[col_name]] = scaler.fit_transform(self.train.x[[col_name]])   
@@ -411,7 +461,7 @@ class LoadDataset:
             self.valid.x[[col_name]] = scaler.transform(self.valid.x[[col_name]])
 
     # MinMax Scaler
-    def scaling_with_minmax(self, col_name):
+    def _scaling_with_minmax(self, col_name):
         assert col_name in self.train.get_num_cols(), f"Column {col_name} is not in the numeric columns"
         scaler = MinMaxScaler()
         self.train.x[[col_name]] = scaler.fit_transform(self.train.x[[col_name]])   
@@ -427,7 +477,7 @@ class LoadDataset:
     ###################
 
     # OneHot Encoder
-    def encoding_with_onehot(self, col_name):
+    def _encoding_with_onehot(self, col_name):
         assert col_name in self.train.get_cat_cols(), f"Column {col_name} is not in the categorical columns"
         encoder = ce.OneHotEncoder(cols=[col_name],
                                    handle_unknown='value',
@@ -446,7 +496,7 @@ class LoadDataset:
             self.valid.x = pd.concat([self.valid.x.drop(col_name, axis=1), encoded_valid], axis=1)
 
     # Label Encoder
-    def encoding_with_label(self, col_name):
+    def _encoding_with_label(self, col_name):
         assert col_name in self.train.get_cat_cols(), f"Column {col_name} is not in the categorical columns"
         encoder = ce.OrdinalEncoder(cols=[col_name],
                                  handle_unknown='value',   # 알 수 없는 범주를 특정 값으로 인코딩
@@ -459,7 +509,7 @@ class LoadDataset:
             self.valid.x[col_name] = encoder.transform(self.valid.x[[col_name]])[col_name]
 
     # Target Encoder
-    def encoding_with_target(self, col_name):
+    def _encoding_with_target(self, col_name):
         assert col_name in self.train.get_cat_cols(), f"Column {col_name} is not in the categorical columns"
         encoder = ce.TargetEncoder(cols=[col_name],
                                    handle_unknown='value',
