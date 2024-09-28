@@ -108,7 +108,8 @@ class LoadDataset:
     def _load(self, path, drop_cols = None, is_test = False):
         data = pd.read_csv(path)
         data = data.sort_index().reset_index(drop=True)
-        data = data.sort_values(by='Collect Date_Dam')
+        if not is_test:
+            data = data.sort_values(by='Collect Date_Dam')
 
         labels = None
         if not is_test:
