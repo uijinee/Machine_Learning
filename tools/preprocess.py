@@ -45,11 +45,27 @@ class LoadDataset:
                  drop_cols = None, 
                  seed=42):
         self.seed=seed
+        
+        def find_unique_columns(df):
+            unique_domain_columns = []
+
+            for column in df.columns:
+                unique_values = df[column].dropna().unique()
+                if len(unique_values) <= 1:
+                    unique_domain_columns.append(column)
+
+            return unique_domain_columns
 
         self.train = Data(*self._load(train_path, drop_cols=drop_cols))
         self.test = Data(*self._load(test_path, drop_cols=drop_cols, is_test=True))
+        
+        unique_columns = find_unique_columns(self.train.x)
+        self.train.x = self.train.x.drop(columns=unique_columns)
+        self.test.x = self.test.x.drop(columns=unique_columns)
+        
         if valid_path is not None:
             self.valid = Data(*self._load(valid_path, drop_cols=drop_cols))
+            self.valid.x = self.valid.x.drop(columns=unique_columns)
         else:
             self.valid = None
 
@@ -92,6 +108,7 @@ class LoadDataset:
     def _load(self, path, drop_cols = None, is_test = False):
         data = pd.read_csv(path)
         data = data.sort_index().reset_index(drop=True)
+        data = data.sort_values(by='Collect Date_Dam')
 
         labels = None
         if not is_test:
