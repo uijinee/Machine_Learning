@@ -83,6 +83,7 @@ class LoadDataset:
         }
         
         self.feature_fc = {
+            "DROP COLUMNS": self._drop_cols,
             "PCA": self._pca,
             "PCA PER PROCESS": self._pca_per_process,
         }
@@ -319,6 +320,12 @@ class LoadDataset:
     ##############################
     
     # PCA
+    def _drop_cols(self, columns):
+        self.train.x = self.train.x.drop(columns=columns)
+        self.test.x = self.test.x.drop(columns=columns)
+        if self.valid is not None:
+            self.valid.x = self.valid.x.drop(columns=columns)
+
     def _pca(self, n_components):
         print(f"  Execute PCA with {n_components} components...")
         if len(self.train.get_cat_cols()):
